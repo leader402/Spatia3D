@@ -13,6 +13,7 @@ Baselines wrapper: RCTD, cell2location, CARD, SONAR, stereoscope.
 
 from spatia3d.deconvolution.admm import DeconvolutionResult, deconvolve_admm
 from spatia3d.deconvolution.graph import spatial_laplacian
+from spatia3d.deconvolution.reference import build_signatures
 from spatia3d.deconvolution.uncertainty import proportion_uncertainty
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "DeconvolutionResult",
     "spatial_laplacian",
     "proportion_uncertainty",
+    "build_signatures",
 ]

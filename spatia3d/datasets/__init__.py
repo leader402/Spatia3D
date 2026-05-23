@@ -17,6 +17,7 @@ from spatia3d.datasets.dlpfc import (
     load_dlpfc,
     load_dlpfc_h5ad,
 )
+from spatia3d.datasets.flysta3d import FLYSTA3D_STAGES, download_flysta3d, load_flysta3d
 from spatia3d.datasets.heart import (
     HEART_STAGES,
     download_heart,
@@ -47,4 +48,7 @@ __all__ = [
     "load_heart_reference",
     "download_heart",
     "HEART_STAGES",
+    "load_flysta3d",
+    "download_flysta3d",
+    "FLYSTA3D_STAGES",
 ]

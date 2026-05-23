@@ -168,6 +168,16 @@ def _assign_domains(
     return np.floor(shifted * n_domains).astype(int)
 
 
+def _nonrigid_warp(coords: np.ndarray, strength: float, side: float, rng) -> np.ndarray:
+    """Smooth low-frequency sinusoidal displacement field — a non-rigid deformation that no rigid
+    transform can undo (per-slice random phase)."""
+    phase = rng.uniform(0, 2 * np.pi, size=2)
+    freq = 2 * np.pi / max(side, 1.0)
+    dx = strength * np.sin(freq * coords[:, 1] + phase[0])
+    dy = strength * np.sin(freq * coords[:, 0] + phase[1])
+    return coords + np.column_stack([dx, dy])
+
+
 def simulate_3d(
     *,
     n_slices: int = 6,
@@ -183,6 +193,7 @@ def simulate_3d(
     library_size: float = 200.0,
     max_rotation_deg: float = 15.0,
     max_translation: float = 2.0,
+    nonrigid_strength: float = 0.0,
     pivot_identity: bool = True,
     seed: int = 0,
 ) -> SimulatedDataset:
@@ -250,6 +261,8 @@ def simulate_3d(
             t = rng.uniform(-max_translation, max_translation, size=2)
         R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
         coords_obs = grid @ R.T + t
+        if nonrigid_strength > 0 and not (pivot_identity and i == pivot):
+            coords_obs = _nonrigid_warp(coords_obs, nonrigid_strength, side, rng)
 
         slices.append(
             Slice(

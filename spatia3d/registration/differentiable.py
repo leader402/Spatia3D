@@ -51,6 +51,23 @@ def _rot(theta: torch.Tensor) -> torch.Tensor:
     return torch.stack([torch.stack([c, -s]), torch.stack([s, c])])
 
 
+def _control_grid(coords_centered, n_control, device):
+    """Square grid of fixed RBF control points over the coord extent, plus spacing sigma."""
+    allc = np.vstack(coords_centered)
+    lo, hi = allc.min(0), allc.max(0)
+    m = max(int(round(np.sqrt(n_control))), 2)
+    gx, gy = np.meshgrid(np.linspace(lo[0], hi[0], m), np.linspace(lo[1], hi[1], m))
+    cp = np.column_stack([gx.ravel(), gy.ravel()])
+    sigma = float(np.mean(hi - lo) / (m - 1))  # ~control-point spacing
+    return torch.tensor(cp, dtype=torch.float64, device=device), sigma
+
+
+def _rbf_field(x: torch.Tensor, cp: torch.Tensor, W: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Smooth differentiable displacement field: sum_k W_k * exp(-||x-cp_k||^2 / 2 sigma^2)."""
+    d2 = torch.cdist(x, cp) ** 2
+    return torch.exp(-d2 / (2 * sigma**2)) @ W
+
+
 def differentiable_ot_align(
     coords_list: list[ArrayLike],
     features_list: list[ArrayLike],
@@ -62,15 +79,18 @@ def differentiable_ot_align(
     sinkhorn_iters: int = 50,
     epochs: int = 150,
     lr: float = 0.05,
+    nonrigid: bool = False,
+    n_control: int = 16,
     device: str | None = None,
     seed: int = 0,
 ) -> OTAlignResult:
     """Refine slice alignment by gradient descent on a Sinkhorn-OT cost (spatial + expression).
 
     Each non-pivot slice gets a learnable rigid transform (angle + translation), init from ICP
-    (``init="icp"``) or identity. The OT plan is computed on a combined cost (``alpha`` weights the
-    spatial term); the loss is the plan-weighted spatial distance, so minimising it aligns
-    feature-matched spots. Differentiable end-to-end (GPU when available).
+    (``init="icp"``) or identity. With ``nonrigid=True`` a learnable smooth RBF deformation field
+    (``n_control`` control points) is added on top, correcting non-rigid warps rigid cannot. The OT
+    plan uses a combined cost (``alpha`` weights the spatial term); the loss is the plan-weighted
+    spatial distance. Differentiable end-to-end (GPU when available).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
@@ -100,7 +120,10 @@ def differentiable_ot_align(
     # Precompute fixed feature costs to the pivot per slice.
     Cf = [((Ft[s][:, None, :] - Ft[pivot][None, :, :]) ** 2).mean(-1) for s in range(n_slices)]
 
-    angles, transl = {}, {}
+    cp, sigma = (
+        _control_grid([c.cpu().numpy() for c in Xc], n_control, device) if nonrigid else (None, 1.0)
+    )
+    angles, transl, warp = {}, {}, {}
     params = []
     for s in range(n_slices):
         if s == pivot:
@@ -109,6 +132,17 @@ def differentiable_ot_align(
         t = torch.tensor(init_trans[s], dtype=torch.float64, device=device, requires_grad=True)
         angles[s], transl[s] = a, t
         params += [a, t]
+        if nonrigid:
+            warp[s] = torch.zeros(
+                cp.shape[0], 2, dtype=torch.float64, device=device, requires_grad=True
+            )
+            params.append(warp[s])
+
+    def transform(s):
+        Xs = Xc[s] @ _rot(angles[s]).t() + transl[s]
+        if nonrigid:
+            Xs = Xs + _rbf_field(Xs, cp, warp[s], sigma)
+        return Xs
 
     opt = torch.optim.Adam(params, lr=lr)
     history: list[float] = []
@@ -118,7 +152,7 @@ def differentiable_ot_align(
         for s in range(n_slices):
             if s == pivot:
                 continue
-            Xs = Xc[s] @ _rot(angles[s]).t() + transl[s]
+            Xs = transform(s)
             C_sp = ((Xs[:, None, :] - Xp[None, :, :]) ** 2).sum(-1)
             cost = alpha * (C_sp / (C_sp.detach().mean() + 1e-12)) + (1 - alpha) * (
                 Cf[s] / (Cf[s].mean() + 1e-12)
@@ -136,7 +170,7 @@ def differentiable_ot_align(
             if s == pivot:
                 aligned.append(coords[s] - coords[s].mean(0))
                 continue
-            Xs = Xc[s] @ _rot(angles[s]).t() + transl[s]
+            Xs = transform(s)
             aligned.append(Xs.cpu().numpy())
             out_angles[s] = float(angles[s])
             out_trans[s] = transl[s].cpu().numpy()

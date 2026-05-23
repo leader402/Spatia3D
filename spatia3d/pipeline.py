@@ -65,36 +65,53 @@ def run_unified(
 ) -> UnifiedResult:
     """Run the Spatia3D pipeline on a slice stack.
 
-    ``align`` ∈ {``"ot"`` (differentiable OT, C2), ``"icp"``, ``"none"``}; ``joint`` ∈ {``"joint"``
-    (C1 deconv<->domain), ``"separate"`` (deconvolve then cluster, no feedback)}. Builds a
-    cross-slice 3D graph from the aligned coordinates and returns proportions + 3D domains.
+    ``joint`` selects how the tasks are coupled:
+
+    * ``"separate"`` — align (per ``align``), then deconvolve, then cluster: a one-directional
+      pipeline, no feedback (the baseline to beat).
+    * ``"joint"`` — align (per ``align``), then C1 block-coordinate deconvolution<->domain on the
+      cross-slice 3D graph (the two downstream tasks are mutual priors; alignment is staged).
+    * ``"end_to_end"`` — all three tasks share one gradient flow: registration is co-trained with
+      unrolled deconvolution + soft domains (C1+C2 together). ``align`` is ignored here, since the
+      transforms are learned inside the model.
+
+    ``align`` ∈ {``"ot"`` (differentiable OT, C2), ``"icp"``, ``"none"``} sets the alignment for the
+    staged modes. Returns proportions + 3D domains over the (aligned) cross-slice coordinates; the
+    ``joint``/``align`` switches make the unified-vs-staged ablation a single entry point.
     """
-    aligned = _aligned_coords(coords_list, expression_list, align, seed=seed, device=device)
-    coords_3d = np.vstack(
-        [
-            np.column_stack([np.asarray(a, float), np.full(len(a), s * z_spacing)])
-            for s, a in enumerate(aligned)
-        ]
-    )
-    slice_ids = np.concatenate([np.full(len(a), s, dtype=int) for s, a in enumerate(aligned)])
     Y = np.vstack([np.asarray(e, float) for e in expression_list])
     V = np.asarray(V, float)
 
     energy: list[float] = []
-    if joint == "joint":
-        res = joint_deconvolution_domain(
-            Y, V, coords=coords_3d, n_domains=n_domains, prior_weight=prior_weight, tv=tv,
-            k=k, n_outer=12, seed=seed,
-        )
-        proportions, domains, energy = res.proportions, res.domains, res.energy
-    elif joint == "separate":
-        beta = deconvolve_admm(Y, V, coords=coords_3d, tv=tv, k=k, normalize=False).raw
-        row = beta.sum(axis=1, keepdims=True)
-        proportions = np.divide(beta, row, out=np.zeros_like(beta), where=row > 0)
-        domains = KMeans(n_clusters=n_domains, n_init=10, random_state=seed).fit_predict(beta)
-    else:
-        raise ValueError(f"unknown joint mode {joint!r}")
+    if joint == "end_to_end":
+        from spatia3d.joint import fit_joint_end_to_end
 
+        res = fit_joint_end_to_end(
+            coords_list, expression_list, V, n_domains=n_domains, z_spacing=z_spacing,
+            seed=seed, device=device,
+        )
+        aligned = res.aligned_coords
+        proportions, domains, energy = res.proportions, res.domains, res.loss_history
+        align = "co-trained"
+    else:
+        aligned = _aligned_coords(coords_list, expression_list, align, seed=seed, device=device)
+        coords_3d = _stack_3d(aligned, z_spacing)
+        if joint == "joint":
+            r = joint_deconvolution_domain(
+                Y, V, coords=coords_3d, n_domains=n_domains, prior_weight=prior_weight, tv=tv,
+                k=k, n_outer=12, seed=seed,
+            )
+            proportions, domains, energy = r.proportions, r.domains, r.energy
+        elif joint == "separate":
+            beta = deconvolve_admm(Y, V, coords=coords_3d, tv=tv, k=k, normalize=False).raw
+            row = beta.sum(axis=1, keepdims=True)
+            proportions = np.divide(beta, row, out=np.zeros_like(beta), where=row > 0)
+            domains = KMeans(n_clusters=n_domains, n_init=10, random_state=seed).fit_predict(beta)
+        else:
+            raise ValueError(f"unknown joint mode {joint!r}")
+
+    coords_3d = _stack_3d(aligned, z_spacing)
+    slice_ids = np.concatenate([np.full(len(a), s, dtype=int) for s, a in enumerate(aligned)])
     return UnifiedResult(
         proportions=proportions,
         domains=domains,
@@ -103,4 +120,14 @@ def run_unified(
         align_mode=align,
         joint_mode=joint,
         energy=energy,
+    )
+
+
+def _stack_3d(aligned, z_spacing):
+    """Stack per-slice 2D coords into (n_total, 3), appending slice depth ``s · z_spacing``."""
+    return np.vstack(
+        [
+            np.column_stack([np.asarray(a, float), np.full(len(a), s * z_spacing)])
+            for s, a in enumerate(aligned)
+        ]
     )

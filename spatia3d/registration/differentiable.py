@@ -121,8 +121,13 @@ def differentiable_ot_align(
             init_angles[s] = math.atan2(R[1, 0], R[0, 0])
             init_trans[s] = t
 
-    # Centre coords per slice (stability); features standardised for the cost.
-    Xc = [torch.tensor(c - c.mean(0), dtype=torch.float64, device=device) for c in coords]
+    # Centre AND scale-normalise coords. The OT loss is plan-weighted ``C_sp`` (~coord²), so on real
+    # pixel/array coordinates (DLPFC ~10²–10³) the gradient explodes and Adam diverges — alignment
+    # then *worsens* the data; it only worked on the small-coordinate (~10) simulator. Optimise in
+    # unit-scale space (lr/epsilon are tuned for it) and scale the outputs back.
+    centered = [c - c.mean(0) for c in coords]
+    scale = float(np.mean([np.sqrt((c**2).sum(1).mean()) for c in centered])) or 1.0
+    Xc = [torch.tensor(c / scale, dtype=torch.float64, device=device) for c in centered]
     Ft = [
         torch.tensor((f - f.mean(0)) / (f.std(0) + 1e-8), dtype=torch.float64, device=device)
         for f in feats
@@ -140,7 +145,8 @@ def differentiable_ot_align(
         if s == pivot:
             continue
         a = torch.tensor(init_angles[s], dtype=torch.float64, device=device, requires_grad=True)
-        t = torch.tensor(init_trans[s], dtype=torch.float64, device=device, requires_grad=True)
+        t = torch.tensor(init_trans[s] / scale, dtype=torch.float64, device=device,
+                         requires_grad=True)  # ICP translation is in original units
         angles[s], transl[s] = a, t
         params += [a, t]
         if nonrigid:
@@ -182,9 +188,9 @@ def differentiable_ot_align(
                 aligned.append(coords[s] - coords[s].mean(0))
                 continue
             Xs = transform(s)
-            aligned.append(Xs.cpu().numpy())
+            aligned.append(Xs.cpu().numpy() * scale)  # back to original coordinate units
             out_angles[s] = float(angles[s])
-            out_trans[s] = transl[s].cpu().numpy()
+            out_trans[s] = transl[s].cpu().numpy() * scale
     return OTAlignResult(
         aligned=aligned,
         angles=out_angles,

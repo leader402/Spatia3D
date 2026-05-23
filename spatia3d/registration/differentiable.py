@@ -51,6 +51,17 @@ def _rot(theta: torch.Tensor) -> torch.Tensor:
     return torch.stack([torch.stack([c, -s]), torch.stack([s, c])])
 
 
+def _mean_sqdist(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    """Feature-mean pairwise squared distance ``||a-b||²/d`` via the Gram identity.
+
+    Uses ``||a||² + ||b||² - 2 a·bᵀ`` so memory is ``O(m·n)``, never the ``O(m·n·d)`` tensor a naive
+    broadcast would build — essential on real data (tens of thousands of genes would otherwise OOM).
+    """
+    a2 = (A * A).sum(1, keepdim=True)  # (m, 1)
+    b2 = (B * B).sum(1).unsqueeze(0)  # (1, n)
+    return (a2 + b2 - 2.0 * A @ B.t()).clamp_min(0.0) / A.shape[1]
+
+
 def _control_grid(coords_centered, n_control, device):
     """Square grid of fixed RBF control points over the coord extent, plus spacing sigma."""
     allc = np.vstack(coords_centered)
@@ -118,7 +129,7 @@ def differentiable_ot_align(
     ]
     Xp = Xc[pivot]
     # Precompute fixed feature costs to the pivot per slice.
-    Cf = [((Ft[s][:, None, :] - Ft[pivot][None, :, :]) ** 2).mean(-1) for s in range(n_slices)]
+    Cf = [_mean_sqdist(Ft[s], Ft[pivot]) for s in range(n_slices)]
 
     cp, sigma = (
         _control_grid([c.cpu().numpy() for c in Xc], n_control, device) if nonrigid else (None, 1.0)

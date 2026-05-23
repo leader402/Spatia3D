@@ -99,7 +99,19 @@ def load_heart(data_dir: str | Path = "data/heart", *, weeks: int = 9, download:
     meta = meta[meta["weeks"] == weeks].copy()
     meta["section"] = [int(s.split("x")[0]) for s in meta.index]  # leading id = z-order
 
-    mat = pd.read_csv(d / "filtered_matrix.tsv.gz", sep="\t", index_col=0)  # genes x spots
+    # Read only this stage's spot columns (not all 3111) as float32: the full 39740-gene dense
+    # matrix balloons to ~1 GB in pandas, which has spiked WSL OOM under concurrent loads.
+    import gzip
+
+    with gzip.open(d / "filtered_matrix.tsv.gz", "rt") as f:
+        header = f.readline().rstrip("\n").split("\t")
+    wanted = set(meta.index)
+    cols = [0] + [i for i, c in enumerate(header) if c in wanted]  # positional: gene col + spots
+    mat = pd.read_csv(
+        d / "filtered_matrix.tsv.gz", sep="\t", usecols=cols,
+        dtype=dict.fromkeys([header[i] for i in cols[1:]], "float32"),
+    )
+    mat = mat.set_index(mat.columns[0])  # genes index; spots are the columns
     genes = mat.index.astype(str)
 
     adatas = []

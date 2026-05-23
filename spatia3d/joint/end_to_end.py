@@ -159,15 +159,14 @@ def fit_joint_end_to_end(
 
     # Standardised features per slice + feature-cost to pivot, for the OT alignment term that pins
     # the geometry (downstream smoothness alone is under-determined and admits spurious transforms).
-    from spatia3d.registration.differentiable import sinkhorn
+    from spatia3d.registration.differentiable import _mean_sqdist, sinkhorn
 
     Ft = [
         torch.tensor((np.asarray(e, float) - np.asarray(e, float).mean(0))
                      / (np.asarray(e, float).std(0) + 1e-8), dtype=torch.float32, device=device)
         for e in expr_list
     ]
-    Cf = {s: ((Ft[s][:, None, :] - Ft[pivot][None, :, :]) ** 2).mean(-1)
-          for s in range(n_slices) if s != pivot}
+    Cf = {s: _mean_sqdist(Ft[s], Ft[pivot]) for s in range(n_slices) if s != pivot}
 
     model = JointEndToEnd(
         n_slices, Vt.shape[0], n_domains, pivot, n_steps=n_steps, sigma=sigma

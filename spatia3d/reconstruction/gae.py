@@ -4,8 +4,8 @@ A symmetric GCN autoencoder over the spatial neighbour graph: the encoder propag
 across neighbours to a low-dimensional embedding, the decoder reconstructs expression from it, and
 training minimises reconstruction error. The learned embedding is spatially smoothed *and*
 expression-faithful, so clustering it recovers spatial domains far better than raw expression
-(the STAGATE / SEDR family). This is the non-equivariant baseline form of C4; the SE(3)-equivariant
-3D graph transformer with the OptiGraph3D class-token is the upgrade layered on top.
+(the STAGATE / SEDR family). This is the non-equivariant baseline form of C4; ``egnn.py`` is the
+E(n)-equivariant upgrade (frame-invariant embedding, edge-list scalable).
 """
 from __future__ import annotations
 

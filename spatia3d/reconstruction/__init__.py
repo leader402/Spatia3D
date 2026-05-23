@@ -1,20 +1,23 @@
 """C4 — 3D-native graph learning for spatial-domain reconstruction.
 
-True cross-slice 3D adjacency graph; node features include 3D coords + expression + learnable
-class-token (keep OptiGraph3D's semi-supervised class-token idea). The SE(3)/translation-equivariant
-or 3D-position-encoded graph transformer is the further upgrade.
+A cross-slice 3D neighbour graph over the aligned stack; node features are expression, processed
+with 3D geometry. Three encoder forms, increasing in inductive bias: a GCN autoencoder (baseline), a
+graph-*attention* autoencoder (STAGATE/OptiGraph3D family), and the **E(n)-equivariant** autoencoder
+(``egnn``) whose embedding is invariant to the arbitrary global frame of the 3D reconstruction and
+which runs on a k-NN edge list (scales past the dense-attention form). Cluster any embedding with
+``cluster_domains`` (optionally spatially ``refine``d).
 
-Available (lazy, torch): GCN autoencoder (normalized_adjacency, SpatialGAE, train_gae,
-spatial_gae_embedding, refine_labels) and the graph-*attention* autoencoder upgrade
-(adjacency_mask, GATLayer, SpatialGAT, train_gat).
-TODO(M5): build_3d_graph(), SE(3)-equivariant transformer, class_token semi-supervision.
+Available (lazy, torch): GCN (normalized_adjacency, SpatialGAE, train_gae, spatial_gae_embedding,
+refine_labels), graph-attention (adjacency_mask, GATLayer, SpatialGAT, train_gat), and equivariant
+(knn_edge_index, EGNNLayer, EquivariantGAE, train_egnn, spatial_egnn_embedding).
 """
 
 from spatia3d.reconstruction.clustering import cluster_domains as cluster_domains  # noqa: F401
 
 _GAE = {"normalized_adjacency", "SpatialGAE", "train_gae", "spatial_gae_embedding", "refine_labels"}
 _GAT = {"adjacency_mask", "GATLayer", "SpatialGAT", "train_gat"}
-__all__ = sorted(_GAE | _GAT | {"cluster_domains"})
+_EGNN = {"knn_edge_index", "EGNNLayer", "EquivariantGAE", "train_egnn", "spatial_egnn_embedding"}
+__all__ = sorted(_GAE | _GAT | _EGNN | {"cluster_domains"})
 
 
 def __getattr__(name: str):
@@ -27,4 +30,8 @@ def __getattr__(name: str):
         from spatia3d.reconstruction import gat
 
         return getattr(gat, name)
+    if name in _EGNN:
+        from spatia3d.reconstruction import egnn
+
+        return getattr(egnn, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

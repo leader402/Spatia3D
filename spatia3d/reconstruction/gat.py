@@ -4,7 +4,7 @@ Replaces the plain GCN message passing of ``gae.py`` with multi-head graph atten
 learns per-edge weights instead of using the fixed normalised adjacency, then reconstructs (raw HVG)
 expression from the attended neighbourhood. The bottleneck embedding clusters into spatial domains.
 This is the non-equivariant attention form of C4 (the OptiGraph3D multi-head-GAT idea, modernised);
-the SE(3)-equivariant 3D-transformer + class-token is the further upgrade.
+``egnn.py`` is the E(n)-equivariant upgrade (frame-invariant embedding, edge-list scalable).
 
 Attention is computed densely with an adjacency mask (the Velickovic factorisation
 ``e_ij = LeakyReLU(s_i + t_j)`` avoids materialising per-edge feature pairs). This suits

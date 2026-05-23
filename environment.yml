@@ -1,0 +1,25 @@
+name: spatia3d
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - scanpy
+  - anndata
+  - squidpy
+  - pot                 # Python Optimal Transport (PASTE-style alignment baselines)
+  - matplotlib
+  - seaborn
+  - jupyterlab
+  - pip:
+      - torch           # install CUDA build per machine; see docs/PLAN.md
+      - torch-geometric
+      - lightning
+      - ruff
+      - pytest
+      - wandb

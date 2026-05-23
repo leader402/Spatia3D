@@ -5,9 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spatia3d"
 version = "0.1.0"
-description = "Robust 3D reconstruction and cell-type deconvolution for spatial transcriptomics via joint registration, unrolled optimization, and 3D graph learning."
+description = "Unified registration, cell-type deconvolution, and 3D spatial-domain reconstruction for spatial transcriptomics."
 requires-python = ">=3.10"
 readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Zhengqian Zhang" }]
+keywords = ["spatial transcriptomics", "deconvolution", "registration", "spatial domains", "3D"]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.2",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]           # graph autoencoders + differentiable registration / joint model
+data = ["scanpy>=1.9", "anndata>=0.8"]  # real spatial-transcriptomics loaders (DLPFC, ...)
+ot = ["pot>=0.9"]                # differentiable optimal-transport alignment
+all = ["torch>=2.0", "scanpy>=1.9", "anndata>=0.8", "pot>=0.9", "pyyaml>=6.0"]
+dev = ["pytest>=7.0", "ruff>=0.1", "pyyaml>=6.0"]
 
 [tool.setuptools.packages.find]
 include = ["spatia3d*"]

@@ -1,11 +1,13 @@
 """Dataset loaders + simulators (see docs/PLAN.md 2.1).
 
-Real: DLPFC (spatialLIBD, Visium) — all 12 samples via Figshare h5ad; human embryonic heart,
-mouse embryo MOSTA (Stereo-seq), Drosophila embryo, mouse brain (MERFISH/Xenium) — TODO.
+Real: DLPFC (spatialLIBD, Visium) — all 12 samples via Figshare h5ad — plus a *platform-agnostic*
+stack loader (``load_spatial_stack``) that turns any ``.h5ad`` slices (Stereo-seq, MERFISH,
+Slide-seq, ...) into pipeline inputs over a shared gene set.
 Simulation: custom generator with known proportions + domains + 3D deformation (ground truth).
 
 Available: simulate_3d (ground-truth bench), load_dlpfc / download_dlpfc (151507 Space Ranger),
-download_dlpfc_all / load_dlpfc_h5ad (full 12 samples, Figshare). TODO: load_heart(), load_mosta().
+download_dlpfc_all / load_dlpfc_h5ad (full 12 samples, Figshare), load_spatial_stack / SpatialStack
+(generic multi-slice loader).
 """
 
 from spatia3d.datasets.dlpfc import (
@@ -21,6 +23,7 @@ from spatia3d.datasets.simulate import (
     Slice,
     simulate_3d,
 )
+from spatia3d.datasets.stack import SpatialStack, load_spatial_stack
 
 __all__ = [
     "Slice",
@@ -32,4 +35,6 @@ __all__ = [
     "download_dlpfc_all",
     "load_dlpfc_h5ad",
     "DLPFC_SAMPLES",
+    "SpatialStack",
+    "load_spatial_stack",
 ]

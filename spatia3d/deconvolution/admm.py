@@ -44,6 +44,7 @@ class DeconvolutionResult:
     dual_residual: float
     converged: bool
     history: dict = field(default_factory=dict)
+    proportions_sd: np.ndarray | None = None  # Laplace posterior SD if return_uncertainty=True
 
 
 def _solve_pupdate(L, rho, l2, w, Ctil, solver, cg_tol, warm, extra_shift=0.0):
@@ -87,6 +88,10 @@ def deconvolve_admm(
     normalize: bool = True,
     solver: str = "direct",
     cg_tol: float = 1e-6,
+    return_uncertainty: bool = False,
+    uncertainty_method: str = "bootstrap",
+    n_boot: int = 24,
+    seed: int = 0,
     verbose: bool = False,
 ) -> DeconvolutionResult:
     """Deconvolve ``Y ≈ P V`` under Elastic Net + spatial TV + non-negativity via ADMM.
@@ -108,6 +113,12 @@ def deconvolve_admm(
         If True, row-normalise the solution to proportions that sum to one.
     solver, cg_tol
         ``"direct"`` (sparse Cholesky via spsolve) or ``"cg"`` (conjugate gradient, scalable).
+    return_uncertainty, uncertainty_method, n_boot, seed
+        If ``return_uncertainty``, also compute per-spot, per-cell-type SD into
+        ``DeconvolutionResult.proportions_sd``. ``uncertainty_method`` is ``"bootstrap"`` (default;
+        ``n_boot`` parametric refits, ``seed`` its RNG — discriminative but costs ``n_boot`` extra
+        solves) or ``"laplace"`` (one-pass, free). See
+        :func:`spatia3d.deconvolution.uncertainty.proportion_uncertainty`.
     """
     Y = np.asarray(Y, dtype=float)
     V = np.asarray(V, dtype=float)
@@ -190,6 +201,25 @@ def deconvolve_admm(
         proportions = np.divide(result_raw, row, out=np.zeros_like(result_raw), where=row > 0)
     else:
         proportions = result_raw
+
+    proportions_sd = None
+    if return_uncertainty:
+        from spatia3d.deconvolution.uncertainty import proportion_uncertainty
+
+        def _refit(Yb):
+            # Re-solve with identical settings (no recursion: return_uncertainty defaults False).
+            r = deconvolve_admm(
+                Yb, V, laplacian=L, k=k, l1=l1, l2=l2, tv=tv, rho=rho,
+                prior_target=prior_target, prior_weight=prior_weight, max_iter=max_iter,
+                tol=tol, eps_rel=eps_rel, normalize=normalize, solver=solver, cg_tol=cg_tol,
+            )
+            return r.proportions if normalize else r.raw
+
+        proportions_sd = proportion_uncertainty(
+            Y, V, result_raw, method=uncertainty_method, normalize=normalize,
+            n_boot=n_boot, refit=_refit, seed=seed,
+        )
+
     return DeconvolutionResult(
         proportions=proportions,
         raw=result_raw,
@@ -198,4 +228,5 @@ def deconvolve_admm(
         dual_residual=float(dual),
         converged=converged,
         history={"objective": obj_hist, "primal": primal_hist, "dual": dual_hist},
+        proportions_sd=proportions_sd,
     )

@@ -11,7 +11,15 @@ import numpy as np
 from numpy.typing import ArrayLike
 from sklearn.metrics import average_precision_score
 
-__all__ = ["rmse", "jsd", "pcc", "auprc", "rare_cell_score", "deconvolution_report"]
+__all__ = [
+    "rmse",
+    "jsd",
+    "pcc",
+    "auprc",
+    "rare_cell_score",
+    "credible_coverage",
+    "deconvolution_report",
+]
 
 
 def _check_pair(pred: ArrayLike, true: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
@@ -111,6 +119,28 @@ def rare_cell_score(
     if metric == "rmse":
         return float(np.sqrt(np.mean((p[:, rare] - t[:, rare]) ** 2)))
     raise ValueError(f"unknown metric {metric!r}; use 'pcc' or 'rmse'")
+
+
+def credible_coverage(
+    true: ArrayLike, pred: ArrayLike, sd: ArrayLike, *, level: float = 0.9
+) -> float:
+    """Empirical coverage of Gaussian credible intervals; should be ≈ ``level`` when calibrated.
+
+    Fraction of true proportions inside the central ``level`` interval ``pred ± z·sd`` (``z`` the
+    standard-normal quantile). Below ``level`` means the uncertainty is over-confident (too tight);
+    above means it is conservative. This is how deconvolution-uncertainty methods are validated
+    against a simulation ground truth.
+    """
+    from scipy.special import erfinv
+
+    p, t = _check_pair(pred, true)
+    s = np.asarray(sd, dtype=float)
+    if s.shape != p.shape:
+        raise ValueError(f"sd shape {s.shape} != pred {p.shape}")
+    # z for a central two-sided interval of probability `level`: z = sqrt(2)·erfinv(level).
+    z = float(np.sqrt(2.0) * erfinv(level))
+    inside = np.abs(t - p) <= z * s
+    return float(inside.mean())
 
 
 def deconvolution_report(pred: ArrayLike, true: ArrayLike) -> dict[str, float]:

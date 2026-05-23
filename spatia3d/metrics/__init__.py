@@ -14,6 +14,7 @@ from spatia3d.metrics.alignment import (
 )
 from spatia3d.metrics.deconvolution import (
     auprc,
+    credible_coverage,
     deconvolution_report,
     jsd,
     pcc,
@@ -33,6 +34,7 @@ __all__ = [
     "pcc",
     "auprc",
     "rare_cell_score",
+    "credible_coverage",
     "deconvolution_report",
     # alignment / 3D
     "landmark_error",

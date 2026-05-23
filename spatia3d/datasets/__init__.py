@@ -17,6 +17,12 @@ from spatia3d.datasets.dlpfc import (
     load_dlpfc,
     load_dlpfc_h5ad,
 )
+from spatia3d.datasets.heart import (
+    HEART_STAGES,
+    download_heart,
+    load_heart,
+    load_heart_reference,
+)
 from spatia3d.datasets.simulate import (
     SimulatedDataset,
     SingleCellReference,
@@ -37,4 +43,8 @@ __all__ = [
     "DLPFC_SAMPLES",
     "SpatialStack",
     "load_spatial_stack",
+    "load_heart",
+    "load_heart_reference",
+    "download_heart",
+    "HEART_STAGES",
 ]

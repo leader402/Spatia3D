@@ -58,7 +58,7 @@ def run_unified(
     joint: str = "joint",
     z_spacing: float = 1.0,
     k: int = 8,
-    prior_weight: float = 2.0,
+    prior_weight: float = 15.0,  # the C1 domain-prior coupling strength; ~2 effectively disables it
     tv: float = 0.5,
     seed: int = 0,
     device: str | None = None,

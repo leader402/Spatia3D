@@ -90,6 +90,7 @@ def differentiable_ot_align(
     sinkhorn_iters: int = 50,
     epochs: int = 150,
     lr: float = 0.05,
+    anchor_weight: float = 0.0,
     nonrigid: bool = False,
     n_control: int = 16,
     device: str | None = None,
@@ -101,7 +102,11 @@ def differentiable_ot_align(
     (``init="icp"``) or identity. With ``nonrigid=True`` a learnable smooth RBF deformation field
     (``n_control`` control points) is added on top, correcting non-rigid warps rigid cannot. The OT
     plan uses a combined cost (``alpha`` weights the spatial term); the loss is the plan-weighted
-    spatial distance. Differentiable end-to-end (GPU when available).
+    spatial distance. ``anchor_weight`` (default 0) optionally ties each transform softly to its ICP
+    init (a trust region): the OT objective is shallow and has spurious optima on near-aligned
+    serial sections with changing morphology, where unconstrained OT can drift and worsen alignment
+    vs ICP — a positive ``anchor_weight`` trades refinement power for that robustness (use it when
+    the sections are already roughly aligned). Differentiable end-to-end (GPU when available).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
@@ -161,6 +166,13 @@ def differentiable_ot_align(
             Xs = Xs + _rbf_field(Xs, cp, warp[s], sigma)
         return Xs
 
+    # Anchor each transform softly to its ICP init (trust region). The OT objective is only a proxy
+    # for alignment and has spurious optima when serial sections differ in morphology (real embryo /
+    # near-aligned slices), where unconstrained OT drifts and *worsens* the alignment vs ICP. The
+    # anchor keeps OT near the good ICP init while still allowing it to refine genuine deformations.
+    init_t = {s: torch.tensor(init_trans[s] / scale, dtype=torch.float64, device=device)
+              for s in angles}
+
     opt = torch.optim.Adam(params, lr=lr)
     history: list[float] = []
     for _ in range(epochs):
@@ -177,6 +189,10 @@ def differentiable_ot_align(
             with torch.no_grad():
                 plan = sinkhorn(cost, epsilon=epsilon, iters=sinkhorn_iters)
             total = total + (plan * C_sp).sum()
+            if anchor_weight > 0:
+                da = angles[s] - init_angles[s]
+                dt = transl[s] - init_t[s]
+                total = total + anchor_weight * (da * da + (dt * dt).sum())
         total.backward()
         opt.step()
         history.append(float(total.item()))

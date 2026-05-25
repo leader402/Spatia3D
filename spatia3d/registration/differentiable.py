@@ -2,13 +2,14 @@
 
 Coarse ICP/Kabsch (``rigid.py``/``pivot.py``) gives a fast init; this module then *refines* each
 slice's transform by gradient descent on an entropic-OT (Sinkhorn) alignment cost combining spatial
-distance (after the learnable transform) with expression dissimilarity. Because every step is
-differentiable, alignment error flows into the gradient and can be optimised jointly with the
-downstream deconvolution / domain model — the property the unrolled C1 was built to exploit, and the
-basis for the non-rigid / cross-platform alignment the field now expects.
+distance (after the learnable transform) with expression dissimilarity. The transform (rotation +
+translation, and an optional non-rigid field) is optimised by autograd; the transport *plan* is
+recomputed and held fixed each step (a stop-gradient, alternating/EM-style update — gradients flow
+through the plan-weighted spatial cost, not through the Sinkhorn iterations). So alignment error
+flows into the transform's gradient and the transform can be co-optimised with the downstream tasks.
 
 A learnable rigid transform per (non-pivot) slice is provided here; a control-point displacement
-field (non-rigid) plugs into the same loss (TODO).
+field (non-rigid) layers on the same cost.
 """
 from __future__ import annotations
 
@@ -106,7 +107,8 @@ def differentiable_ot_align(
     init (a trust region): the OT objective is shallow and has spurious optima on near-aligned
     serial sections with changing morphology, where unconstrained OT can drift and worsen alignment
     vs ICP — a positive ``anchor_weight`` trades refinement power for that robustness (use it when
-    the sections are already roughly aligned). Differentiable end-to-end (GPU when available).
+    the sections are already roughly aligned). The transform is gradient-optimised (plan
+    stop-gradient per step); GPU when available.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)

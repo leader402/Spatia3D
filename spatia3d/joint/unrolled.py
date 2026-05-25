@@ -38,6 +38,7 @@ class DiffJointResult:
     n_iter: int
     device: str = "cpu"
     raw: np.ndarray = field(repr=False, default=None)
+    beta_torch: object = field(repr=False, default=None)  # grad-carrying β when differentiable=True
 
 
 class _Spectral:
@@ -85,19 +86,30 @@ def differentiable_joint_c1(
     n_outer: int = 8,
     n_admm: int = 60,
     tol: float = 1e-3,
+    differentiable: bool = False,
     device: str | None = None,
     seed: int = 0,
 ) -> DiffJointResult:
-    """Differentiable unrolled-ADMM joint deconvolution + soft-k-means domains (GPU when available).
+    """Unrolled-ADMM joint deconvolution + soft-k-means domains (GPU when available).
 
     Reproduces the exact ADMM deconvolution (RMSE parity with ``deconvolve_admm``) while coupling a
     differentiable soft-domain prior. ``tau`` is the soft-assignment temperature on compositions;
     ``kappa`` the prior strength.
+
+    With ``differentiable=True`` the whole forward builds an autograd graph (pass ``Y``/``V`` as
+    torch tensors with ``requires_grad`` to backprop into them) and ``DiffJointResult.beta_torch``
+    is the grad-carrying β — so the unrolled solver can sit inside an end-to-end model. Default
+    ``False`` runs the same computation under ``no_grad`` as a fast numerical solve. (The k-means
+    centroid *init* is always detached — a constant start — but the soft-domain updates are in the
+    graph.)
     """
+    import contextlib
+
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(seed)
-    Y = np.asarray(Y, dtype=np.float64)
-    V = np.asarray(V, dtype=np.float64)
+    if not differentiable:  # keep torch tensors (and their grad) when differentiable
+        Y = np.asarray(Y, dtype=np.float64)
+        V = np.asarray(V, dtype=np.float64)
     L = laplacian.toarray() if laplacian is not None else spatial_laplacian(coords, k=k).toarray()
     sp = _Spectral(Y, V, L, device)
 
@@ -108,11 +120,11 @@ def differentiable_joint_c1(
     Z = torch.zeros(sp.n, sp.K, dtype=torch.float64, device=device)
     U = torch.zeros_like(Z)
 
-    with torch.no_grad():  # deterministic forward; ops are differentiable (grads on for training)
+    with contextlib.nullcontext() if differentiable else torch.no_grad():
         Z, U = _admm(sp, None, kappa=0.0, rho=rho, l2=l2, l1=l1, tv=tv, n_admm=n_admm, Z=Z, U=U)
         beta = Z
-        # init soft-kmeans centroids from a hard k-means on the no-prior composition
-        prop0 = (beta / (beta.sum(1, keepdim=True) + 1e-12)).cpu().numpy()
+        # init soft-kmeans centroids from a hard k-means on the no-prior composition (detached init)
+        prop0 = (beta / (beta.sum(1, keepdim=True) + 1e-12)).detach().cpu().numpy()
         c0 = KMeans(n_clusters=n_domains, n_init=10, random_state=seed).fit(prop0).cluster_centers_
         centroids = torch.as_tensor(c0, dtype=torch.float64, device=device)  # (n_domains, K), props
 
@@ -135,22 +147,23 @@ def differentiable_joint_c1(
             energy.append(float(e.item()))
             delta = torch.linalg.norm(beta_new - beta) / (torch.linalg.norm(beta) + 1e-12)
             beta = beta_new
-            if float(delta) < tol:
+            if float(delta.detach()) < tol:  # convergence check is control-flow, off the graph
                 break
 
         prop = beta / (beta.sum(1, keepdim=True) + 1e-12)
         d2 = torch.cdist(prop, centroids) ** 2
         S = torch.softmax(-d2 / (d2.mean() * tau + 1e-12), dim=1)
 
-    beta_np = beta.cpu().numpy()
+    beta_np = beta.detach().cpu().numpy()
     row = beta_np.sum(1, keepdims=True)
     proportions = np.divide(beta_np, row, out=np.zeros_like(beta_np), where=row > 0)
     return DiffJointResult(
         proportions=proportions,
-        domains=S.argmax(1).cpu().numpy(),
-        assignment=S.cpu().numpy(),
+        domains=S.argmax(1).detach().cpu().numpy(),
+        assignment=S.detach().cpu().numpy(),
         energy=energy,
         n_iter=n_iter,
         device=device,
         raw=beta_np,
+        beta_torch=beta if differentiable else None,
     )

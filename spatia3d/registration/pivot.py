@@ -15,11 +15,37 @@ from spatia3d.registration.rigid import apply_transform, icp, kabsch
 __all__ = ["pivot_register"]
 
 
+def _inplane_rotation(theta: float, dim: int) -> np.ndarray:
+    """In-plane rotation (about z for 3D) by ``theta``, as a ``(dim, dim)`` matrix."""
+    c, s = np.cos(theta), np.sin(theta)
+    R = np.eye(dim)
+    R[:2, :2] = np.array([[c, -s], [s, c]])
+    return R
+
+
+def _icp_multi_angle(coords, target, n_angles, icp_kwargs):
+    """ICP with ``n_angles`` evenly-spaced rotation inits, keeping the lowest-residual solve.
+
+    init-free ICP/OT stalls on large inter-slice rotations (the reason PASTE struggles and STitch3D
+    brute-forces angles); trying several starting rotations makes registration rotation-robust.
+    """
+    dim = coords.shape[1]
+    best = None
+    for kk in range(n_angles):
+        R0 = _inplane_rotation(2 * np.pi * kk / n_angles, dim)
+        t0 = target.mean(0) - coords.mean(0) @ R0.T  # centroid-align at this starting rotation
+        R, t, info = icp(coords, target, init=(R0, t0), **icp_kwargs)
+        if best is None or info["mean_error"] < best[2]:
+            best = (R, t, info["mean_error"])
+    return best[0], best[1]
+
+
 def pivot_register(
     coords_list: list[ArrayLike],
     *,
     pivot: int | None = None,
     method: str = "paired",
+    n_init_angles: int = 1,
     **icp_kwargs,
 ) -> tuple[list[np.ndarray], list[tuple[np.ndarray, np.ndarray]]]:
     """Align every slice to a pivot slice with a rigid transform.
@@ -33,6 +59,10 @@ def pivot_register(
     method
         ``"paired"`` uses closed-form Kabsch and requires index-correspondence with the pivot (equal
         spot counts); ``"icp"`` uses ICP and works for unpaired sets.
+    n_init_angles
+        For ``method="icp"``: number of evenly-spaced rotation initialisations to try, keeping the
+        best (lowest-residual) — makes ICP robust to large inter-slice rotation. ``1`` (default) is
+        the plain centroid-init ICP; the field (STitch3D) brute-forces 6 angles for this reason.
     **icp_kwargs
         Forwarded to :func:`spatia3d.registration.rigid.icp` when ``method="icp"``.
 
@@ -58,7 +88,10 @@ def pivot_register(
         elif method == "paired":
             R, t = kabsch(coords, target)
         elif method == "icp":
-            R, t, _ = icp(coords, target, **icp_kwargs)
+            if n_init_angles > 1:
+                R, t = _icp_multi_angle(coords, target, n_init_angles, icp_kwargs)
+            else:
+                R, t, _ = icp(coords, target, **icp_kwargs)
         else:
             raise ValueError(f"unknown method {method!r}; use 'paired' or 'icp'")
         aligned.append(apply_transform(coords, R, t))

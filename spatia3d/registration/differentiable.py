@@ -86,6 +86,7 @@ def differentiable_ot_align(
     *,
     pivot: int | None = None,
     init: str = "icp",
+    n_init_angles: int = 1,
     alpha: float = 0.7,
     epsilon: float = 0.05,
     sinkhorn_iters: int = 50,
@@ -123,7 +124,8 @@ def differentiable_ot_align(
     if init == "icp":
         from spatia3d.registration import pivot_register
 
-        _, transforms = pivot_register(coords, pivot=pivot, method="icp", max_iter=200)
+        _, transforms = pivot_register(coords, pivot=pivot, method="icp", max_iter=200,
+                                       n_init_angles=n_init_angles)
         for s, (R, t) in enumerate(transforms):
             init_angles[s] = math.atan2(R[1, 0], R[0, 0])
             init_trans[s] = t

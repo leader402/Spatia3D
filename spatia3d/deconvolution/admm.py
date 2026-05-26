@@ -7,8 +7,12 @@ Solves the OptiGraph3D MAP deconvolution as a regularised inverse problem. With 
     min_P  1/2 ||Y - P V||_F^2  +  l1 ||P||_1  +  l2/2 ||P||_F^2  +  tv/2 tr(P^T L P)
     s.t.   P >= 0
 
-i.e. Frobenius data fidelity + Elastic Net (l1 sparsity, l2 collinearity) + a quadratic spatial-TV
-smoothness through the spot graph Laplacian ``L``, with non-negativity.
+i.e. Frobenius data fidelity + Elastic Net (l1 sparsity, l2 collinearity) + a spatial smoothness
+term through the spot graph, with non-negativity. The spatial term has two forms (``tv_mode``):
+``"quadratic"`` uses the Laplacian penalty ``tv/2 tr(Pᵀ L P)`` (Gaussian smoothing, blurs region
+boundaries); ``"graphtv"`` uses the *edge-preserving* graph total variation ``tv Σ_e ||(G P)_e||₂``
+(``G`` the signed incidence, ``GᵀG = L``), giving piecewise-constant 3D regions with sharp domain
+boundaries — solved by an extra ADMM edge split that reuses the same Sylvester P-update.
 
 ADMM split ``P = Z``:
   f(P) = data + l2 + tv  (smooth quadratic),   g(Z) = l1||Z||_1 + indicator(Z >= 0).
@@ -28,7 +32,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 from numpy.typing import ArrayLike
 
-from spatia3d.deconvolution.graph import spatial_laplacian
+from spatia3d.deconvolution.graph import incidence_matrix, spatial_laplacian
 
 __all__ = ["DeconvolutionResult", "deconvolve_admm"]
 
@@ -79,6 +83,8 @@ def deconvolve_admm(
     l1: float = 0.01,
     l2: float = 0.01,
     tv: float = 0.1,
+    tv_mode: str = "quadratic",
+    tv_rho: float = 1.0,
     rho: float = 1.0,
     prior_target: ArrayLike | None = None,
     prior_weight: float = 0.0,
@@ -104,7 +110,14 @@ def deconvolve_admm(
         Spatial graph for the TV term. Provide a precomputed ``laplacian`` or ``coords`` (a k-NN
         Laplacian is then built). Required when ``tv > 0``.
     l1, l2, tv, rho
-        Elastic-Net L1/L2 weights, TV weight, and ADMM penalty.
+        Elastic-Net L1/L2 weights, spatial-smoothness weight, and ADMM penalty.
+    tv_mode, tv_rho
+        Spatial regulariser type. ``"quadratic"`` (default) penalises ``tr(Pᵀ L P)`` — a Gaussian/
+        Tikhonov graph smoothness that blurs across region boundaries. ``"graphtv"`` penalises the
+        edge-preserving graph total variation ``Σ_edges ||(G P)_e||₂`` (``G`` = signed incidence,
+        ``GᵀG = L``), which yields piecewise-constant 3D regions with *sharp* domain boundaries —
+        better at chamber/tissue interfaces and visibly cleaner 3D maps. ``tv_rho`` is the ADMM
+        penalty for the extra edge split used by ``"graphtv"``.
     max_iter, tol, eps_rel
         Iteration cap and the absolute / relative tolerances of the Boyd primal-dual stopping rule
         (tolerances scale with the variable magnitudes, so convergence is invariant to expression
@@ -128,8 +141,14 @@ def deconvolve_admm(
         raise ValueError(f"gene dimension mismatch: Y has {g}, V has {V.shape[1]}")
 
     L = None
+    Ginc = None  # signed incidence (graph gradient) for edge-preserving graph-TV
     if tv > 0:
-        if laplacian is not None:
+        if tv_mode == "graphtv":
+            if coords is None:
+                raise ValueError("tv_mode='graphtv' requires `coords` (to build the edge graph)")
+            Ginc = incidence_matrix(coords, k=k).tocsr()
+            L = (Ginc.T @ Ginc).tocsr()  # == combinatorial Laplacian of the same graph
+        elif laplacian is not None:
             L = laplacian
         elif coords is not None:
             L = spatial_laplacian(coords, k=k)
@@ -153,6 +172,14 @@ def deconvolve_admm(
     if prior is not None:
         YVt = YVt + prior_weight * prior  # constant RHS contribution of the prior term
 
+    # graph-TV extra split:  G P = Wtv  (Wtv carries the edge-preserving prox)
+    graphtv = Ginc is not None
+    sigma = tv_rho
+    smoothL = (sigma * L).tocsr() if graphtv else L  # P-update uses (smoothL + shift·I)
+    if graphtv:
+        Wtv = np.zeros((Ginc.shape[0], kc))
+        Gtv = np.zeros((Ginc.shape[0], kc))
+
     P = np.zeros((n, kc))
     Z = np.zeros((n, kc))
     U = np.zeros((n, kc))
@@ -163,11 +190,23 @@ def deconvolve_admm(
     for _ in range(max_iter):
         n_iter += 1
         C = YVt + rho * (Z - U)
+        if graphtv:
+            C = C + sigma * (Ginc.T @ (Wtv - Gtv))  # RHS contribution of the edge split
         Ctil = C @ Q
         Ptil = _solve_pupdate(
-            L, rho, l2, w, Ctil, solver, cg_tol, warm=(Z @ Q), extra_shift=prior_weight
+            smoothL, rho, l2, w, Ctil, solver, cg_tol, warm=(Z @ Q), extra_shift=prior_weight
         )
         P = Ptil @ Q.T
+
+        primal_tv = 0.0
+        if graphtv:
+            DP = Ginc @ P
+            R = DP + Gtv
+            nrm = np.linalg.norm(R, axis=1, keepdims=True)
+            shrink = np.maximum(0.0, 1.0 - (tv / sigma) / np.maximum(nrm, 1e-12))
+            Wtv = shrink * R  # row-wise (per-edge) block soft-threshold → ℓ2,1 graph-TV prox
+            Gtv = Gtv + DP - Wtv
+            primal_tv = np.linalg.norm(DP - Wtv)
 
         Z_prev = Z
         Z = np.maximum(P + U - l1 / rho, 0.0)  # prox of l1 + nonneg
@@ -175,7 +214,7 @@ def deconvolve_admm(
 
         # Boyd et al. (2011) stopping rule: primal/dual residuals against scale-aware tolerances
         # (a single absolute tol is wrong here because P inherits the expression magnitude).
-        primal = np.linalg.norm(P - Z)
+        primal = np.sqrt(np.linalg.norm(P - Z) ** 2 + primal_tv**2)
         dual = rho * np.linalg.norm(Z - Z_prev)
         sqrt_n = np.sqrt(P.size)
         eps_pri = sqrt_n * tol + eps_rel * max(np.linalg.norm(P), np.linalg.norm(Z))
@@ -184,12 +223,11 @@ def deconvolve_admm(
         dual_hist.append(dual)
         if verbose or len(obj_hist) == 0:
             resid = 0.5 * np.linalg.norm(Y - P @ V) ** 2
-            obj = (
-                resid
-                + l1 * np.abs(P).sum()
-                + 0.5 * l2 * np.linalg.norm(P) ** 2
-                + (0.5 * tv * np.sum(P * (L @ P)) if L is not None else 0.0)
-            )
+            if graphtv:
+                spatial = tv * float(np.linalg.norm(Ginc @ P, axis=1).sum())
+            else:
+                spatial = 0.5 * tv * np.sum(P * (L @ P)) if L is not None else 0.0
+            obj = resid + l1 * np.abs(P).sum() + 0.5 * l2 * np.linalg.norm(P) ** 2 + spatial
             obj_hist.append(float(obj))
         if primal < eps_pri and dual < eps_dual:
             converged = True
@@ -209,7 +247,9 @@ def deconvolve_admm(
         def _refit(Yb):
             # Re-solve with identical settings (no recursion: return_uncertainty defaults False).
             r = deconvolve_admm(
-                Yb, V, laplacian=L, k=k, l1=l1, l2=l2, tv=tv, rho=rho,
+                Yb, V, coords=(coords if tv_mode == "graphtv" else None),
+                laplacian=(None if tv_mode == "graphtv" else L), k=k, l1=l1, l2=l2, tv=tv,
+                tv_mode=tv_mode, tv_rho=tv_rho, rho=rho,
                 prior_target=prior_target, prior_weight=prior_weight, max_iter=max_iter,
                 tol=tol, eps_rel=eps_rel, normalize=normalize, solver=solver, cg_tol=cg_tol,
             )
